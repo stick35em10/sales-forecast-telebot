@@ -1,12 +1,13 @@
 services:
   - type: web
-    name: sales-forecast-telebot
+    name: sales-forecast-bot
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    buildCommand: poetry install --no-dev
+    startCommand: poetry run gunicorn app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: TELEGRAM_TOKEN
         sync: false
       - key: WEBHOOK_URL
         sync: false
+    pythonVersion: "3.11.8"
