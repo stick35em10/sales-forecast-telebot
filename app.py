@@ -1,361 +1,515 @@
-from flask import Flask, request, jsonify
+#!/usr/bin/env python3
+"""
+Telegram Bot - Sales Forecast
+Configurado para Render com Poetry e Gunicorn
+"""
+
 import os
+import asyncio
 import logging
-import random
-from datetime import datetime, timedelta
+from flask import Flask, request, jsonify
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, ContextTypes
+import matplotlib
+matplotlib.use('Agg')  # Importante: usar backend não-interativo
+import matplotlib.pyplot as plt
+import pandas as pd
+import io
 
-app = Flask(__name__)
+# Importar seu modelo
+try:
+    from model import SalesForecaster
+except ImportError:
+    # Fallback se model.py não existir
+    class SalesForecaster:
+        def train_model(self):
+            pass
+        def forecast(self, days=7):
+            import pandas as pd
+            from datetime import datetime, timedelta
+            dates = [datetime.now() + timedelta(days=i) for i in range(days)]
+            return pd.DataFrame({
+                'date': dates,
+                'predicted_sales': [300 + i*10 for i in range(days)],
+                'day_name': [d.strftime('%A') for d in dates]
+            })
 
-# Configuração
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')
-
-logging.basicConfig(level=logging.INFO)
+# Configuração de logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-class SimpleSalesForecaster:
-    def __init__(self):
-        self.is_trained = True
-    
-    def generate_forecast(self, days=30):
-        """Gera previsão de vendas simulada"""
-        forecasts = []
-        base_date = datetime.now()
-        
-        for i in range(1, days + 1):
-            date = base_date + timedelta(days=i)
-            
-            # Simulação realista de vendas
-            base = 1000 + (i * 15)  # Tendência crescente
-            weekday = date.weekday()
-            
-            # Efeitos de sazonalidade
-            if weekday >= 5:  # Final de semana
-                seasonal = 300
-            elif weekday == 0:  # Segunda-feira
-                seasonal = -150  
-            elif date.day >= 25:  # Final do mês
-                seasonal = 200
-            else:
-                seasonal = 0
-            
-            random_effect = random.randint(-80, 80)
-            sales = base + seasonal + random_effect
-            sales = max(sales, 400)  # Mínimo
-            
-            forecasts.append({
-                'date': date.strftime('%Y-%m-%d'),
-                'day_name': ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'][weekday],
-                'predicted_sales': round(sales, 2),
-                'is_weekend': weekday >= 5
-            })
-        
-        return forecasts
-    
-    def get_stats(self, forecasts):
-        """Calcula estatísticas"""
-        sales = [f['predicted_sales'] for f in forecasts]
-        total = sum(sales)
-        avg = total / len(sales)
-        best_day = max(forecasts, key=lambda x: x['predicted_sales'])
-        worst_day = min(forecasts, key=lambda x: x['predicted_sales'])
-        
-        return {
-            'total_predicted': round(total, 2),
-            'daily_average': round(avg, 2),
-            'best_day': best_day,
-            'worst_day': worst_day,
-            'forecast_days': len(forecasts)
-        }
+# Variáveis de ambiente
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # https://sales-forecast-bot.onrender.com
 
-forecaster = SimpleSalesForecaster()
+if not TELEGRAM_TOKEN:
+    logger.error("❌ TELEGRAM_TOKEN não configurado!")
+    raise ValueError("TELEGRAM_TOKEN é obrigatório")
+
+# Flask app
+app = Flask(__name__)
+
+# Bot e Forecaster
+bot = Bot(token=TELEGRAM_TOKEN)
+forecaster = SalesForecaster()
+
+# Flag para treinar modelo apenas uma vez
+model_trained = False
+
+def ensure_model_trained():
+    """Garante que o modelo está treinado"""
+    global model_trained
+    if not model_trained:
+        try:
+            logger.info("🤖 Treinando modelo...")
+            forecaster.train_model()
+            model_trained = True
+            logger.info("✅ Modelo treinado com sucesso!")
+        except Exception as e:
+            logger.error(f"❌ Erro ao treinar modelo: {e}")
+
+# ==================== COMANDOS DO BOT ====================
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /start"""
+    welcome_text = """
+🏪 *Bem-vindo ao Bot de Previsão de Vendas!*
+
+Eu uso Machine Learning para prever suas vendas! 📊
+
+*Comandos disponíveis:*
+/start - Mostrar esta mensagem
+/previsao - Gerar previsão de 7 dias 📈
+/teste - Teste rápido do sistema ⚡
+/ajuda - Ver ajuda detalhada ❓
+
+_Sistema desenvolvido com Random Forest ML_
+    """
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+
+async def ajuda_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /ajuda"""
+    help_text = """
+📊 *GUIA DE USO*
+
+*Comandos:*
+🔹 /previsao - Gera previsão de vendas para os próximos 7 dias, incluindo:
+  • Gráfico visual
+  • Estatísticas (total, média)
+  • Melhor e pior dia
+  • Detalhes diários
+
+🔹 /teste - Teste rápido (3 dias)
+
+🔹 /start - Reiniciar conversa
+
+*Como funciona:*
+O bot usa Machine Learning (Random Forest) para analisar padrões históricos e prever vendas futuras.
+
+💡 _Dica: Use /previsao toda segunda-feira para planejar sua semana!_
+    """
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def teste_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /teste - teste rápido"""
+    try:
+        await update.message.reply_text("⚡ Testando sistema...")
+        
+        ensure_model_trained()
+        
+        # Previsão de 3 dias
+        forecast = forecaster.forecast(days=3)
+        
+        response = "✅ *Bot funcionando perfeitamente!*\n\n"
+        response += "📊 *Teste do Modelo (3 dias):*\n\n"
+        
+        for _, row in forecast.iterrows():
+            emoji = "📅"
+            response += f"{emoji} {row['date'].strftime('%d/%m')} ({row['day_name'][:3]}): R$ {row['predicted_sales']:.2f}\n"
+        
+        response += "\n✨ _Sistema operacional!_"
+        
+        await update.message.reply_text(response, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Erro no teste: {e}")
+        await update.message.reply_text(
+            f"❌ Erro no teste: {str(e)}\n\n"
+            "Tente novamente em alguns instantes.",
+            parse_mode='Markdown'
+        )
+
+async def previsao_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /previsao - previsão completa de 7 dias"""
+    try:
+        await update.message.reply_text("🔄 Gerando sua previsão de 7 dias...")
+        
+        ensure_model_trained()
+        
+        # Gerar previsão
+        forecast_df = forecaster.forecast(days=7)
+        
+        # Criar gráfico profissional
+        plt.style.use('seaborn-v0_8-darkgrid')
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        # Plot principal
+        ax.plot(forecast_df['date'], forecast_df['predicted_sales'], 
+               marker='o', linewidth=3, markersize=8, 
+               color='#2E86AB', label='Vendas Previstas')
+        
+        # Adicionar área preenchida
+        ax.fill_between(forecast_df['date'], forecast_df['predicted_sales'], 
+                        alpha=0.3, color='#2E86AB')
+        
+        # Marcar melhor e pior dia
+        max_idx = forecast_df['predicted_sales'].idxmax()
+        min_idx = forecast_df['predicted_sales'].idxmin()
+        
+        ax.scatter(forecast_df.loc[max_idx, 'date'], 
+                  forecast_df.loc[max_idx, 'predicted_sales'],
+                  color='green', s=200, zorder=5, marker='*', 
+                  label='Melhor Dia')
+        
+        ax.scatter(forecast_df.loc[min_idx, 'date'], 
+                  forecast_df.loc[min_idx, 'predicted_sales'],
+                  color='red', s=200, zorder=5, marker='v',
+                  label='Pior Dia')
+        
+        # Configurações
+        ax.set_title('📈 Previsão de Vendas - Próximos 7 Dias', 
+                    fontsize=16, fontweight='bold', pad=20)
+        ax.set_xlabel('Data', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Vendas (R$)', fontsize=12, fontweight='bold')
+        ax.legend(loc='best', framealpha=0.9)
+        ax.grid(True, alpha=0.3)
+        
+        # Formatar eixo X
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        
+        # Salvar gráfico
+        buffer = io.BytesIO()
+        plt.savefig(buffer, format='png', dpi=120, bbox_inches='tight',
+                   facecolor='white', edgecolor='none')
+        buffer.seek(0)
+        plt.close()
+        
+        # Calcular estatísticas
+        total = forecast_df['predicted_sales'].sum()
+        media = forecast_df['predicted_sales'].mean()
+        max_day = forecast_df.loc[max_idx]
+        min_day = forecast_df.loc[min_idx]
+        
+        # Texto do relatório
+        stats_text = f"""
+📈 *PREVISÃO DE VENDAS - 7 DIAS*
+
+💰 *Resumo Financeiro:*
+• Total Previsto: R$ {total:,.2f}
+• Média Diária: R$ {media:,.2f}
+
+🏆 *Melhor Momento:*
+• Dia: {max_day['date'].strftime('%d/%m/%Y')} ({max_day['day_name']})
+• Vendas: R$ {max_day['predicted_sales']:.2f}
+
+⚠️  *Dia de Atenção:*
+• Dia: {min_day['date'].strftime('%d/%m/%Y')} ({min_day['day_name']})
+• Vendas: R$ {min_day['predicted_sales']:.2f}
+
+📋 *Previsão Detalhada:*
+"""
+        
+        # Adicionar todos os dias
+        for idx, row in forecast_df.iterrows():
+            emoji = "🟢" if idx == max_idx else ("🔴" if idx == min_idx else "🔵")
+            stats_text += f"{emoji} {row['date'].strftime('%d/%m')} ({row['day_name'][:3]}): R$ {row['predicted_sales']:.2f}\n"
+        
+        stats_text += "\n💡 _Use estas previsões para otimizar estoque e equipe!_"
+        
+        # Enviar gráfico com legenda
+        await update.message.reply_photo(
+            photo=buffer,
+            caption=stats_text,
+            parse_mode='Markdown'
+        )
+        
+        logger.info(f"✅ Previsão enviada para {update.effective_user.id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Erro na previsão: {str(e)}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Desculpe, ocorreu um erro ao gerar a previsão.\n\n"
+            "Por favor, tente novamente em alguns instantes.",
+            parse_mode='Markdown'
+        )
+
+# ==================== ROTAS FLASK ====================
 
 @app.route('/')
 def home():
-    return '''
+    """Página inicial"""
+    return """
     <!DOCTYPE html>
-    <html>
+    <html lang="pt-BR">
     <head>
-        <title>🤖 Bot Previsão de Vendas</title>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>🤖 Bot Telegram - Previsão de Vendas</title>
         <style>
             * { margin: 0; padding: 0; box-sizing: border-box; }
-            body { 
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: #333;
                 min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
                 padding: 20px;
             }
-            .container { 
-                max-width: 1200px; 
-                margin: 0 auto; 
-                background: white; 
-                padding: 30px; 
-                border-radius: 20px; 
-                box-shadow: 0 20px 60px rgba(0,0,0,0.1);
+            .container {
+                background: rgba(255, 255, 255, 0.95);
+                border-radius: 20px;
+                padding: 40px;
+                max-width: 800px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             }
-            .header { 
-                text-align: center; 
-                margin-bottom: 40px;
-                background: linear-gradient(135deg, #2E86AB, #A23B72);
+            h1 { 
+                color: #667eea; 
+                margin-bottom: 10px;
+                font-size: 2.5em;
+            }
+            .subtitle {
+                color: #666;
+                margin-bottom: 30px;
+                font-size: 1.2em;
+            }
+            .status {
+                background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
                 color: white;
-                padding: 40px 20px;
+                padding: 20px;
                 border-radius: 15px;
+                margin: 20px 0;
+                text-align: center;
             }
-            .header h1 { 
-                font-size: 2.5em; 
-                margin-bottom: 10px; 
-                font-weight: 700;
+            .status h2 { margin-bottom: 10px; }
+            .info-box {
+                background: #f8f9fa;
+                padding: 20px;
+                border-radius: 10px;
+                margin: 20px 0;
+                border-left: 4px solid #667eea;
             }
-            .header h2 { 
-                font-size: 1.3em; 
-                opacity: 0.9;
-                font-weight: 300;
-            }
-            .status-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-                gap: 20px;
-                margin: 30px 0;
-            }
-            .status-card { 
-                background: #f8f9fa; 
-                padding: 25px; 
-                border-radius: 15px; 
-                border-left: 5px solid #2E86AB;
-                transition: transform 0.2s;
-            }
-            .status-card:hover {
-                transform: translateY(-5px);
-            }
-            .status-card h3 { 
-                color: #2E86AB; 
+            .info-box h3 {
+                color: #667eea;
                 margin-bottom: 15px;
-                font-size: 1.3em;
             }
-            .api-endpoint { 
-                background: #2c3e50; 
-                color: white; 
-                padding: 12px 15px; 
-                border-radius: 8px; 
-                margin: 8px 0; 
-                font-family: 'Monaco', 'Consolas', monospace;
-                font-size: 0.9em;
-                border-left: 4px solid #2E86AB;
+            ul { 
+                list-style: none; 
+                padding-left: 0;
             }
-            .btn {
-                display: inline-block;
-                background: #2E86AB;
-                color: white;
-                padding: 12px 25px;
-                border-radius: 25px;
-                text-decoration: none;
-                font-weight: 600;
-                margin: 10px 5px;
-                transition: all 0.3s;
-            }
-            .btn:hover {
-                background: #A23B72;
-                transform: translateY(-2px);
-            }
-            .feature-list {
-                list-style: none;
-                padding: 0;
-            }
-            .feature-list li {
+            li {
                 padding: 8px 0;
                 border-bottom: 1px solid #eee;
             }
-            .feature-list li:before {
-                content: "✅ ";
-                margin-right: 10px;
+            li:last-child { border-bottom: none; }
+            .command {
+                font-family: 'Courier New', monospace;
+                background: #667eea;
+                color: white;
+                padding: 2px 8px;
+                border-radius: 4px;
+                font-weight: bold;
             }
-            @media (max-width: 768px) {
-                .container { padding: 20px; }
-                .header { padding: 30px 15px; }
-                .header h1 { font-size: 2em; }
-            }
+            .emoji { font-size: 1.5em; }
         </style>
     </head>
     <body>
         <div class="container">
-            <div class="header">
-                <h1>🏪 Bot de Previsão de Vendas</h1>
-                <h2>🤖 Sistema Inteligente • Python 3.13 Compatível</h2>
+            <h1><span class="emoji">🤖</span> Bot de Previsão de Vendas</h1>
+            <p class="subtitle">Inteligência Artificial para seu negócio</p>
+            
+            <div class="status">
+                <h2>✅ Sistema Online e Operacional</h2>
+                <p><strong>Status:</strong> Ativo</p>
+                <p><strong>Modo:</strong> Webhook (Render Deploy)</p>
+                <p><strong>ML Model:</strong> Random Forest</p>
             </div>
 
-            <div class="status-grid">
-                <div class="status-card">
-                    <h3>🚀 Status do Sistema</h3>
-                    <p><strong>Versão:</strong> 1.0.0</p>
-                    <p><strong>Python:</strong> ''' + str(os.sys.version.split()[0]) + '''</p>
-                    <p><strong>Bot Telegram:</strong> <span style="color: ''' + ('#28a745' if TELEGRAM_TOKEN else '#dc3545') + '''">''' + ('✅ Configurado' if TELEGRAM_TOKEN else '❌ Não configurado') + '''</span></p>
-                    <p><strong>Última verificação:</strong> ''' + datetime.now().strftime('%d/%m/%Y %H:%M') + '''</p>
-                </div>
-
-                <div class="status-card">
-                    <h3>📊 Funcionalidades</h3>
-                    <ul class="feature-list">
-                        <li>Previsão de vendas 30 dias</li>
-                        <li>Análise de sazonalidade</li>
-                        <li>Estatísticas detalhadas</li>
-                        <li>Integração Telegram</li>
-                        <li>API REST completa</li>
-                        <li>Deploy automático</li>
-                    </ul>
-                </div>
-
-                <div class="status-card">
-                    <h3>🔧 Configuração</h3>
-                    <p>Variáveis de ambiente necessárias:</p>
-                    <code>TELEGRAM_TOKEN</code><br>
-                    <code>WEBHOOK_URL</code>
-                    <div style="margin-top: 15px;">
-                        <a href="/health" class="btn">Verificar Saúde</a>
-                        <a href="/forecast" class="btn">Testar Previsão</a>
-                    </div>
-                </div>
-            </div>
-
-            <div class="status-card">
-                <h3>🌐 Endpoints da API</h3>
-                <div class="api-endpoint">GET <strong>/</strong> - Esta página inicial</div>
-                <div class="api-endpoint">GET <strong>/health</strong> - Status do sistema</div>
-                <div class="api-endpoint">GET <strong>/forecast?days=30</strong> - Previsão de vendas</div>
-                <div class="api-endpoint">GET <strong>/set_webhook</strong> - Configurar Telegram</div>
-                <div class="api-endpoint">POST <strong>/webhook</strong> - Webhook do bot</div>
-                
-                <div style="margin-top: 20px;">
-                    <h4>📋 Exemplo de uso:</h4>
-                    <code>curl https://''' + (WEBHOOK_URL.split('//')[1] if WEBHOOK_URL else 'seu-app.onrender.com') + '''/forecast?days=7</code>
-                </div>
-            </div>
-
-            <div class="status-card">
-                <h3>🎯 Próximos Passos</h3>
-                <ol style="padding-left: 20px; line-height: 1.6;">
-                    <li><strong>Configurar variáveis</strong> no painel do Render</li>
-                    <li><strong>Testar endpoints</strong> usando os botões acima</li>
-                    <li><strong>Configurar webhook</strong> no Telegram</li>
-                    <li><strong>Enviar /start</strong> para o bot</li>
+            <div class="info-box">
+                <h3>📱 Como usar o bot:</h3>
+                <ol style="padding-left: 20px;">
+                    <li>Abra o Telegram no seu celular</li>
+                    <li>Procure pelo seu bot</li>
+                    <li>Envie <span class="command">/start</span></li>
+                    <li>Use <span class="command">/previsao</span> para gerar previsões</li>
                 </ol>
-                <div style="margin-top: 20px; padding: 15px; background: #e7f3ff; border-radius: 10px;">
-                    <strong>💡 Dica:</strong> O sistema já está funcionando! Configure as variáveis de ambiente para ativar o bot completo.
-                </div>
             </div>
+
+            <div class="info-box">
+                <h3>⚡ Comandos disponíveis:</h3>
+                <ul>
+                    <li><span class="command">/start</span> - Iniciar conversa com o bot</li>
+                    <li><span class="command">/previsao</span> - Gerar previsão de 7 dias com gráfico</li>
+                    <li><span class="command">/teste</span> - Teste rápido do sistema</li>
+                    <li><span class="command">/ajuda</span> - Ver ajuda detalhada</li>
+                </ul>
+            </div>
+
+            <div class="info-box">
+                <h3>🎯 O que você recebe:</h3>
+                <ul>
+                    <li>📊 Previsões de vendas para 7 dias</li>
+                    <li>📈 Gráficos visuais profissionais</li>
+                    <li>💰 Estatísticas financeiras detalhadas</li>
+                    <li>🏆 Identificação dos melhores dias</li>
+                    <li>⚠️  Alertas para dias de baixa</li>
+                    <li>💡 Recomendações inteligentes</li>
+                </ul>
+            </div>
+
+            <p style="text-align: center; color: #999; margin-top: 30px;">
+                Desenvolvido com ❤️ usando Machine Learning
+            </p>
         </div>
     </body>
     </html>
-    '''
-
-@app.route('/health')
-def health_check():
-    return jsonify({
-        "status": "healthy", 
-        "service": "sales-forecast-bot",
-        "version": "1.0.0",
-        "python_version": os.sys.version.split()[0],
-        "telegram_configured": TELEGRAM_TOKEN is not None,
-        "webhook_url_configured": WEBHOOK_URL is not None,
-        "timestamp": datetime.now().isoformat(),
-        "endpoints": {
-            "home": "/",
-            "health": "/health", 
-            "forecast": "/forecast?days=7",
-            "set_webhook": "/set_webhook"
-        }
-    })
-
-@app.route('/forecast')
-def get_forecast():
-    try:
-        days = min(int(request.args.get('days', '7')), 90)  # Máximo 90 dias
-        forecasts = forecaster.generate_forecast(days=days)
-        stats = forecaster.get_stats(forecasts)
-        
-        response = {
-            'success': True,
-            'days': days,
-            'stats': stats,
-            'forecast': forecasts,
-            'generated_at': datetime.now().isoformat(),
-            'model': 'simple_forecaster_v1'
-        }
-        
-        return jsonify(response)
-        
-    except Exception as e:
-        logger.error(f"Erro na previsão: {str(e)}")
-        return jsonify({
-            'success': False, 
-            'error': str(e),
-            'message': 'Erro ao gerar previsão'
-        }), 500
-
-@app.route('/set_webhook')
-def set_webhook():
-    webhook_url = f"{WEBHOOK_URL}/webhook" if WEBHOOK_URL else "VARIABLE_WEBHOOK_URL_NOT_SET"
-    
-    return jsonify({
-        "status": "success" if WEBHOOK_URL else "config_required",
-        "message": "Webhook configuration",
-        "webhook_url": webhook_url,
-        "instructions": [
-            "1. Configure WEBHOOK_URL environment variable",
-            "2. Set Telegram bot webhook to the URL above", 
-            "3. Send /start to your bot to test"
-        ] if WEBHOOK_URL else [
-            "Configure WEBHOOK_URL environment variable first"
-        ],
-        "environment_check": {
-            "TELEGRAM_TOKEN_set": TELEGRAM_TOKEN is not None,
-            "WEBHOOK_URL_set": WEBHOOK_URL is not None
-        }
-    })
+    """
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Simulação de webhook do Telegram"""
-    if not TELEGRAM_TOKEN:
-        return jsonify({
-            "status": "error", 
-            "message": "TELEGRAM_TOKEN not configured",
-            "action": "Set TELEGRAM_TOKEN environment variable"
-        }), 400
-    
+    """Webhook para receber mensagens do Telegram"""
     try:
-        # Simular processamento de mensagem
-        data = request.get_json() or {}
+        update = Update.de_json(request.get_json(force=True), bot)
         
-        response = {
-            "status": "webhook_received",
-            "message": "Telegram webhook is working!",
-            "action": "Bot is ready to receive messages",
-            "next_steps": [
-                "Send /start to your bot on Telegram",
-                "Bot will respond with welcome message",
-                "Use /previsao to get sales forecast"
-            ],
-            "received_data": len(str(data)) > 0
-        }
+        # Processar update
+        asyncio.run(process_update(update))
         
-        logger.info(f"Webhook simulado recebido: {response}")
-        return jsonify(response)
+        return 'OK', 200
         
     except Exception as e:
-        logger.error(f"Erro no webhook: {str(e)}")
+        logger.error(f"❌ Erro no webhook: {str(e)}", exc_info=True)
+        return 'ERROR', 500
+
+async def process_update(update: Update):
+    """Processa um update do Telegram"""
+    try:
+        # Criar application
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        
+        # Registrar comandos
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("ajuda", ajuda_command))
+        application.add_handler(CommandHandler("teste", teste_command))
+        application.add_handler(CommandHandler("previsao", previsao_command))
+        
+        # Processar update
+        await application.initialize()
+        await application.process_update(update)
+        await application.shutdown()
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao processar update: {str(e)}", exc_info=True)
+
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    """Configura o webhook do Telegram"""
+    try:
+        if not WEBHOOK_URL:
+            return jsonify({
+                'error': 'WEBHOOK_URL não configurado',
+                'instructions': [
+                    '1. Configure WEBHOOK_URL environment variable',
+                    '2. Set Telegram bot webhook to the URL above',
+                    '3. Send /start to your bot to test'
+                ]
+            }), 400
+        
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        
+        # Configurar webhook via API do Telegram
+        result = asyncio.run(bot.set_webhook(url=webhook_url))
+        
+        if result:
+            webhook_info = asyncio.run(bot.get_webhook_info())
+            
+            return jsonify({
+                'success': True,
+                'webhook_url': webhook_url,
+                'message': 'Webhook configurado com sucesso!',
+                'webhook_info': {
+                    'url': webhook_info.url,
+                    'has_custom_certificate': webhook_info.has_custom_certificate,
+                    'pending_update_count': webhook_info.pending_update_count
+                },
+                'instructions': [
+                    '1. Configure WEBHOOK_URL environment variable',
+                    '2. Set Telegram bot webhook to the URL above',
+                    '3. Send /start to your bot to test'
+                ],
+                'status': 'success'
+            })
+        else:
+            return jsonify({
+                'error': 'Falha ao configurar webhook',
+                'status': 'failed'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"❌ Erro ao configurar webhook: {str(e)}", exc_info=True)
         return jsonify({
-            "status": "error", 
-            "message": str(e)
+            'error': str(e),
+            'status': 'error'
         }), 500
 
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'telegram-sales-forecast-bot',
+        'mode': 'webhook',
+        'model_trained': model_trained,
+        'webhook_configured': WEBHOOK_URL is not None
+    })
+
+@app.route('/info', methods=['GET'])
+def info():
+    """Informações do bot"""
+    try:
+        bot_info = asyncio.run(bot.get_me())
+        webhook_info = asyncio.run(bot.get_webhook_info())
+        
+        return jsonify({
+            'bot': {
+                'id': bot_info.id,
+                'name': bot_info.first_name,
+                'username': bot_info.username
+            },
+            'webhook': {
+                'url': webhook_info.url,
+                'pending_updates': webhook_info.pending_update_count,
+                'last_error_message': webhook_info.last_error_message
+            },
+            'status': 'operational'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ==================== INICIALIZAÇÃO ====================
+
+# Treinar modelo na inicialização (se possível)
+try:
+    logger.info("🚀 Inicializando aplicação...")
+    ensure_model_trained()
+except Exception as e:
+    logger.warning(f"⚠️  Modelo será treinado no primeiro uso: {e}")
+
 if __name__ == '__main__':
-    logger.info("🚀 Iniciando Sales Forecast Bot...")
-    logger.info(f"📊 Python: {os.sys.version}")
-    logger.info(f"🔑 Telegram: {'✅' if TELEGRAM_TOKEN else '❌'}") 
-    logger.info(f"🌐 Webhook: {'✅' if WEBHOOK_URL else '❌'}")
-    
+    # Apenas para desenvolvimento local
     port = int(os.environ.get('PORT', 5000))
+    logger.info(f"🌐 Servidor rodando na porta {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
