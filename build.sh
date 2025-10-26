@@ -1,5 +1,4 @@
 #!/bin/bash
-echo "🔨 Build otimizado para Render..."
+set -e
 pip install --upgrade pip
-pip install -r requirements.txt
-echo "✅ Build completo!"
+pip install --only-binary=:all: -r requirements.txt

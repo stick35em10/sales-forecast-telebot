@@ -6,7 +6,7 @@ werkzeug==2.3.7
 # Telegram
 python-telegram-bot==20.7
 
-# Data science - Python 3.13 compatible versions
+# Data science - Python 3.11 compatible versions
 pandas==2.2.2
 numpy==1.26.4
 scikit-learn==1.4.2
