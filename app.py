@@ -188,7 +188,8 @@ async def previsao_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ax.grid(True, alpha=0.3)
         
         # Formatar eixo X
-        plt.xticks(rotation=45, ha='right')
+        ax.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%d/%m'))
+        plt.xticks(rotation=0, ha='center')
         plt.tight_layout()
         
         # Salvar gráfico
@@ -499,6 +500,9 @@ def info():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/check-deps')
+def check_deps():
+    return "✅ Check dependencies endpoint is disabled."
 # ==================== INICIALIZAÇÃO ====================
 
 # Treinar modelo na inicialização (se possível)

@@ -1,21 +1,11 @@
-# requirements.txt
-# Core dependencies
-flask==3.0.0
-gunicorn==21.2.0
-werkzeug==2.3.7
-
-# Telegram
-python-telegram-bot==20.7
-
-# Data science - Python 3.11 compatible versions
+flask==3.0.3
+gunicorn==22.0.0
+werkzeug==3.0.3
+python-telegram-bot==21.1.1
 pandas==2.2.2
 numpy==1.26.4
-scikit-learn==1.4.2
-
-# Visualization
-matplotlib==3.8.4
-plotly==5.20.0
+scikit-learn==1.5.0
+matplotlib==3.9.0
+plotly==5.22.0
 kaleido==0.2.1
-
-# Utils
-python-dotenv==1.0.0
+python-dotenv==1.0.1
