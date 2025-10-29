@@ -15,6 +15,10 @@ matplotlib.use('Agg')  # Importante: usar backend não-interativo
 import matplotlib.pyplot as plt
 import pandas as pd
 import io
+from dotenv import load_dotenv
+
+# Carregar variáveis de ambiente do arquivo .env
+load_dotenv()
 
 # Importar seu modelo
 try:
@@ -512,8 +516,23 @@ try:
 except Exception as e:
     logger.warning(f"⚠️  Modelo será treinado no primeiro uso: {e}")
 
+def main_polling():
+    """Inicia o bot em modo polling para desenvolvimento local."""
+    logger.info("🚀 Iniciando bot em modo polling para desenvolvimento local...")
+    
+    # Criar a aplicação
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Registrar comandos
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("ajuda", ajuda_command))
+    application.add_handler(CommandHandler("teste", teste_command))
+    application.add_handler(CommandHandler("previsao", previsao_command))
+    
+    # Iniciar o polling
+    application.run_polling()
+
 if __name__ == '__main__':
-    # Apenas para desenvolvimento local
-    port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🌐 Servidor rodando na porta {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Se executado diretamente, usa polling.
+    # Para deploy (ex: Gunicorn), o servidor WSGI usará o objeto 'app' do Flask.
+    main_polling()

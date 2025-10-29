@@ -135,7 +135,8 @@ class SalesForecaster:
         
         result_df = pd.DataFrame({
             'date': future_dates,
-            'predicted_sales': predictions
+            'predicted_sales': predictions,
+            'day_name': pd.Series(future_dates).dt.strftime('%A')
         })
         
         print(f"✅ Previsão gerada para {days} dias")
