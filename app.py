@@ -252,6 +252,18 @@ async def previsao_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
+# ==================== CONFIGURAÇÃO DA APLICAÇÃO TELEGRAM ====================
+
+# Criar a aplicação uma vez para ser usada pelo webhook e pelo polling
+application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+# Registrar comandos
+application.add_handler(CommandHandler("start", start_command))
+application.add_handler(CommandHandler("ajuda", ajuda_command))
+application.add_handler(CommandHandler("teste", teste_command))
+application.add_handler(CommandHandler("previsao", previsao_command))
+
+
 # ==================== ROTAS FLASK ====================
 
 @app.route('/')
@@ -382,158 +394,4 @@ def home():
         </div>
     </body>
     </html>
-    """
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Webhook para receber mensagens do Telegram"""
-    try:
-        update = Update.de_json(request.get_json(force=True), bot)
-        
-        # Processar update
-        asyncio.run(process_update(update))
-        
-        return 'OK', 200
-        
-    except Exception as e:
-        logger.error(f"❌ Erro no webhook: {str(e)}", exc_info=True)
-        return 'ERROR', 500
-
-async def process_update(update: Update):
-    """Processa um update do Telegram"""
-    try:
-        # Criar application
-        application = Application.builder().token(TELEGRAM_TOKEN).build()
-        
-        # Registrar comandos
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(CommandHandler("ajuda", ajuda_command))
-        application.add_handler(CommandHandler("teste", teste_command))
-        application.add_handler(CommandHandler("previsao", previsao_command))
-        
-        # Processar update
-        await application.initialize()
-        await application.process_update(update)
-        await application.shutdown()
-        
-    except Exception as e:
-        logger.error(f"❌ Erro ao processar update: {str(e)}", exc_info=True)
-
-@app.route('/set_webhook', methods=['GET'])
-def set_webhook():
-    """Configura o webhook do Telegram"""
-
-    async def _async_set_webhook():
-        if not WEBHOOK_URL:
-            return jsonify({
-                'error': 'WEBHOOK_URL não configurado',
-                'instructions': [
-                    '1. Configure WEBHOOK_URL environment variable',
-                    '2. Set Telegram bot webhook to the URL above',
-                    '3. Send /start to your bot to test'
-                ]
-            }), 400
-        
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        
-        # Configurar webhook via API do Telegram
-        if await bot.set_webhook(url=webhook_url):
-            webhook_info = await bot.get_webhook_info()
-            
-            return jsonify({
-                'success': True,
-                'webhook_url': webhook_url,
-                'message': 'Webhook configurado com sucesso!',
-                'webhook_info': {
-                    'url': webhook_info.url,
-                    'has_custom_certificate': webhook_info.has_custom_certificate,
-                    'pending_update_count': webhook_info.pending_update_count
-                },
-                'instructions': [
-                    '1. Configure WEBHOOK_URL environment variable',
-                    '2. Set Telegram bot webhook to the URL above',
-                    '3. Send /start to your bot to test'
-                ],
-                'status': 'success'
-            })
-        else:
-            return jsonify({
-                'error': 'Falha ao configurar webhook',
-                'status': 'failed'
-            }), 500
-
-    try:
-        return asyncio.run(_async_set_webhook())
-    except Exception as e:
-        logger.error(f"❌ Erro ao configurar webhook: {str(e)}", exc_info=True)
-        return jsonify({
-            'error': str(e),
-            'status': 'error'
-        }), 500
-
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'telegram-sales-forecast-bot',
-        'mode': 'webhook',
-        'model_trained': model_trained,
-        'webhook_configured': WEBHOOK_URL is not None
-    })
-
-@app.route('/info', methods=['GET'])
-def info():
-    """Informações do bot"""
-    try:
-        bot_info = asyncio.run(bot.get_me())
-        webhook_info = asyncio.run(bot.get_webhook_info())
-        
-        return jsonify({
-            'bot': {
-                'id': bot_info.id,
-                'name': bot_info.first_name,
-                'username': bot_info.username
-            },
-            'webhook': {
-                'url': webhook_info.url,
-                'pending_updates': webhook_info.pending_update_count,
-                'last_error_message': webhook_info.last_error_message
-            },
-            'status': 'operational'
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/check-deps')
-def check_deps():
-    return "✅ Check dependencies endpoint is disabled."
-# ==================== INICIALIZAÇÃO ====================
-
-# Treinar modelo na inicialização (se possível)
-try:
-    logger.info("🚀 Inicializando aplicação...")
-    ensure_model_trained()
-except Exception as e:
-    logger.warning(f"⚠️  Modelo será treinado no primeiro uso: {e}")
-
-def main_polling():
-    """Inicia o bot em modo polling para desenvolvimento local."""
-    logger.info("🚀 Iniciando bot em modo polling para desenvolvimento local...")
     
-    # Criar a aplicação
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Registrar comandos
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("ajuda", ajuda_command))
-    application.add_handler(CommandHandler("teste", teste_command))
-    application.add_handler(CommandHandler("previsao", previsao_command))
-    
-    # Iniciar o polling
-    application.run_polling()
-
-if __name__ == '__main__':
-    # Se executado diretamente, usa polling.
-    # Para deploy (ex: Gunicorn), o servidor WSGI usará o objeto 'app' do Flask.
-    main_polling()
