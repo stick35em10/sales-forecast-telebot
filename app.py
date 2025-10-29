@@ -422,7 +422,8 @@ async def process_update(update: Update):
 @app.route('/set_webhook', methods=['GET'])
 def set_webhook():
     """Configura o webhook do Telegram"""
-    try:
+
+    async def _async_set_webhook():
         if not WEBHOOK_URL:
             return jsonify({
                 'error': 'WEBHOOK_URL não configurado',
@@ -436,10 +437,8 @@ def set_webhook():
         webhook_url = f"{WEBHOOK_URL}/webhook"
         
         # Configurar webhook via API do Telegram
-        result = asyncio.run(bot.set_webhook(url=webhook_url))
-        
-        if result:
-            webhook_info = asyncio.run(bot.get_webhook_info())
+        if await bot.set_webhook(url=webhook_url):
+            webhook_info = await bot.get_webhook_info()
             
             return jsonify({
                 'success': True,
@@ -462,7 +461,9 @@ def set_webhook():
                 'error': 'Falha ao configurar webhook',
                 'status': 'failed'
             }), 500
-            
+
+    try:
+        return asyncio.run(_async_set_webhook())
     except Exception as e:
         logger.error(f"❌ Erro ao configurar webhook: {str(e)}", exc_info=True)
         return jsonify({
